@@ -1,0 +1,5 @@
+#!/bin/sh
+openssl genrsa -aes256 -out ssl.key 1024
+openssl req -new -key ssl.key -out ssl.csr
+openssl rsa -in ssl.key -out ssl.key
+openssl x509 -req -days 365 -in ssl.csr -signkey ssl.key -out ssl.crt
