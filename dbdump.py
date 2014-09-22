@@ -1,19 +1,4 @@
 #!/usr/bin/env python
-"""
-Standalone web server that outputs changes that occurred on a table since a specific date.
-
-
-Example usage:
-
-    ./dbdump.py --host devdb-vip --username internal --password xxx
-
-
-You can then get the CSV output of all changes by browsing to:
-
-    http://localhost:8888/lumaweb/job_app?since=2014-09-01+01:23:45&exclude_columns=links,files,message
-
-
-"""
 import sys
 import argparse
 import socket
@@ -76,9 +61,9 @@ def requires_acceptance_of(mime_types):
 
 
 @app.errorhandler(Exception)
-def errorException(exc):
+def error_handler(exc):
     """
-    Catch-all exception handler
+    Error handler for uncaught exceptions.
     """
     trace = traceback.format_exc()
     logger.error(exc)
@@ -102,7 +87,7 @@ def favicon():
     abort(404)
 
 
-@app.route('/<string:database>')
+@app.route('/<string:database>/')
 @requires_auth
 @requires_acceptance_of(['text/csv'])
 def tables(database):
@@ -118,7 +103,7 @@ def tables(database):
         conn.close()
 
 
-@app.route('/<string:database>/<string:table>')
+@app.route('/<string:database>/<string:table>/')
 @requires_auth
 @requires_acceptance_of(['text/csv'])
 def updated_rows(database, table):
