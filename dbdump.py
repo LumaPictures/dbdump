@@ -1,12 +1,18 @@
 #!/usr/bin/env python
 import sys
 import argparse
+import time
+try:
+    import argcomplete
+except ImportError:
+    argcomplete = None
 import socket
 import logging
 import json
 import datetime
 import traceback
 import functools
+from dateutil import tz
 
 from flask import Flask, abort, render_template, request, Response
 import MySQLdb, _mysql_exceptions
@@ -15,6 +21,7 @@ __version__ = '1.0.0'
 
 app = application = Flask(__name__.split('.')[0])
 logger = logging.getLogger(__name__)
+quote = MySQLdb.escape_string
 arguments = {}  # Parsed arguments
 
 
@@ -131,14 +138,13 @@ def updated_rows(database, table):
 
         # Build query to fetch updated rows
         cursor = conn.cursor()
-        quote = MySQLdb.escape_string
 
         # Filter
         where_expr = []
         where_args = []
         if since is not None:
             where_expr.append('`%s` > %%s' % quote(ts_column))
-            where_args.append(since)
+            where_args.append(since.astimezone(get_db_timezone(conn)).replace(tzinfo=None))
         if len(where_expr):
             where_stmt = ' where ' + ' and '.join(where_expr)
         else:
@@ -285,12 +291,18 @@ def get_datetime_arg(key, args=None):
     if args is None:
         args = request.args
 
+    utc_tz = tz.gettz('GMT')
+
     if key in request.args:
         try:
-            return datetime.datetime.strptime(request.args['since'], '%Y-%m-%d %H:%M:%S')
+            return datetime.datetime \
+                .strptime(request.args['since'], '%Y-%m-%d %H:%M:%S') \
+                .replace(tzinfo=utc_tz)
         except ValueError:
             try:
-                return datetime.datetime.strptime(request.args['since'], '%Y-%m-%d')
+                return datetime.datetime \
+                    .strptime(request.args['since'], '%Y-%m-%d') \
+                    .replace(tzinfo=utc_tz)
             except ValueError:
                 raise ValueError('"%s" argument is not in the correct format of YYYY-MM-DD HH:MM:SS' % key)
 
@@ -309,6 +321,22 @@ def get_list_arg(key, args=None):
         value = []
 
     return value
+
+
+def get_system_timezone():
+    tz_name = time.strftime('%Z', time.gmtime())
+    return tz.gettz(tz_name)
+
+
+def get_db_timezone(conn):
+    cursor = conn.cursor()
+    cursor.execute("select @@session.time_zone")
+
+    row = cursor.fetchone()
+    if row is None or row[0] == 'SYSTEM':
+        return get_system_timezone()
+
+    return tz.gettz(row[0])
 
 
 def get_db_connection():
@@ -414,6 +442,9 @@ if __name__ == '__main__':
     parser.add_argument('--version', action='version',
                         version='%%(prog)s (version %s)' % __version__,
                         help='Display version and exit')
+
+    if argcomplete:
+        argcomplete.autocomplete(parser)
 
     arguments = vars(parser.parse_args())
     sys.exit(main())
