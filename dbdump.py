@@ -103,7 +103,8 @@ def tables(database):
     """
     conn = get_db_connection()
     try:
-        supported_tables = get_autoupdate_timestamp_columns(conn, database).keys()
+        supported_tables = dependency_sort_tables(conn, database, 
+            get_autoupdate_timestamp_columns(conn, database).keys())
         return make_csv_response(map(lambda r: (r,), supported_tables), ['table'])
 
     finally:
@@ -150,12 +151,17 @@ def updated_rows(database, table):
         else:
             where_stmt = ''
 
-        query = "select `%(projection)s` from `%(database)s`.`%(table)s` %(where_stmt)s order by `%(ts_column)s`" % dict(
-                    projection='`, `'.join(map(quote, columns)), 
-                    database=quote(database), 
-                    table=quote(table), 
-                    where_stmt=where_stmt, 
-                    ts_column=quote(ts_column))
+        query = """
+            select `%(projection)s` 
+            from `%(database)s`.`%(table)s`
+            %(where_stmt)s
+            order by `%(ts_column)s`
+            """ % dict(
+                projection='`, `'.join(map(quote, columns)), 
+                database=quote(database), 
+                table=quote(table), 
+                where_stmt=where_stmt, 
+                ts_column=quote(ts_column))
 
         # Execute query
         logger.debug(query % tuple(where_args))
@@ -259,6 +265,11 @@ def get_projection(conn, database, table, include_columns=None, exclude_columns=
     return [r[0] for r in cursor.fetchall() if column_matches(r[0])]
 
 
+def dependency_sort_tables(conn, database, table_names):
+    # TODO: implement!
+    return table_names
+
+
 def get_autoupdate_timestamp_columns(conn, database):
     """
     Returns a dict of {table_name: timestamped_column_name} for only the
@@ -285,6 +296,8 @@ def get_autoupdate_timestamp_columns(conn, database):
 def get_datetime_arg(key, args=None):
     """
     Get a query argument containing a date and time.
+    Assumes argument is in UTC timezone.
+
     Returns None if nothing found.
     Raises a ValueError on parse failure.
     """
@@ -293,18 +306,22 @@ def get_datetime_arg(key, args=None):
 
     utc_tz = tz.gettz('GMT')
 
+    # Parse formats to try (in order)
+    formats = [
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d'
+    ]
+
     if key in request.args:
-        try:
-            return datetime.datetime \
-                .strptime(request.args['since'], '%Y-%m-%d %H:%M:%S') \
-                .replace(tzinfo=utc_tz)
-        except ValueError:
+        for format in formats:
             try:
                 return datetime.datetime \
-                    .strptime(request.args['since'], '%Y-%m-%d') \
+                    .strptime(request.args['since'], format) \
                     .replace(tzinfo=utc_tz)
             except ValueError:
-                raise ValueError('"%s" argument is not in the correct format of YYYY-MM-DD HH:MM:SS' % key)
+                continue
+
+        raise ValueError('"%s" argument is not in the correct format' % key)
 
 
 def get_list_arg(key, args=None):
