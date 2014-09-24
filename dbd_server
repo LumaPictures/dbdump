@@ -19,6 +19,13 @@ import MySQLdb, _mysql_exceptions
 
 __version__ = '1.0.0'
 
+# Default args
+HTTP_DEFAULT_ADDRESS = '0.0.0.0'
+HTTP_DEFAULT_PORT = 8888
+HTTP_DEFAULT_SSL_PRIVATE_KEY = 'ssl.key'
+HTTP_DEFAULT_SSL_PUBLIC_KEY = 'ssl.crt'
+DB_DEFAULT_PORT = 3306
+
 app = application = Flask(__name__.split('.')[0])
 logger = logging.getLogger(__name__)
 quote = MySQLdb.escape_string
@@ -235,9 +242,10 @@ class CSVGenerator(object):
         if data is None:
             return ''
         else:
-            return self.quote_char + \
-                str(data).replace(self.quote_char, self.escape_char + self.quote_char) + \
-                self.quote_char
+            escaped = str(data) \
+                .replace(self.escape_char, self.escape_char * 2) \
+                .replace(self.quote_char, self.escape_char + self.quote_char)
+            return self.quote_char + escaped + self.quote_char
 
 
 def get_projection(conn, database, table, include_columns=None, exclude_columns=None):
@@ -266,8 +274,38 @@ def get_projection(conn, database, table, include_columns=None, exclude_columns=
 
 
 def dependency_sort_tables(conn, database, table_names):
+    table_set = "', '".join(map(quote, table_names))
+    cursor = conn.cursor()
+    query = """
+        select distinct
+            kcu.table_name,
+            kcu.referenced_table_name
+        from information_schema.table_constraints tc
+        join information_schema.key_column_usage kcu on
+            kcu.constraint_schema = tc.constraint_schema and
+            kcu.constraint_name = tc.constraint_name and
+            kcu.table_schema = tc.table_schema and
+            kcu.table_name = tc.table_name
+        where
+            tc.constraint_type = 'FOREIGN KEY' and
+            tc.table_schema = '%s' and
+            tc.table_name in ('%s') and
+            kcu.referenced_table_name in ('%s')
+        order by
+            kcu.table_name,
+            kcu.referenced_table_name
+        """ % (quote(database), table_set, table_set)
+    logger.debug('depsort query: %s' % query)
+    cursor.execute(query)
+
+    deps = [(row[0], row[1]) for row in cursor.fetchall()]
+    logger.debug('deps: %s' % deps)
+
+    dep_sorted = table_names
+
+    #assert dep_sorted == ['applicant_watchers', 'job_app_notes', 'job_app'], dep_sorted
     # TODO: implement!
-    return table_names
+    return dep_sorted
 
 
 def get_autoupdate_timestamp_columns(conn, database):
@@ -367,22 +405,27 @@ def get_db_connection():
                            db='information_schema')
 
 
+def init_logger():
+    logging.basicConfig(level=logging.DEBUG if arguments['debug'] else logging.INFO,
+                        format='%(asctime)s | %(levelname)-5s | %(name)s: %(message)s')
+
+
 def main():
     """
     Run as a standalone web server from the command line.
     Don't do this in production. Use your web server to mount this script as a WSGI endpoint instead.
     """
+    init_logger()
     debug = arguments['debug']
 
-    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
-                        format='[%(levelname)s] %(name)s: %(message)s')
-
-    logger.debug('Arguments: %s' % json.dumps(arguments))
+    #logger.debug('Arguments: %s' % json.dumps(arguments))
 
     # Test database connection
     try:
-        logger.debug('Testing database connection...')
+        logger.debug('Test database connection at %(db_username)s@%(db_host)s:%(db_port)d...' % (arguments))
         conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('select 1')
         conn.close()
     except _mysql_exceptions.OperationalError, ex:
         code, message = ex.args
@@ -423,42 +466,51 @@ def main():
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Standalone web server that outputs changes that occurred on a table since a specific date')
+    parser = argparse.ArgumentParser(prog='dbdump',
+                                     description='Web server that sends changed database records to clients. '
+                                                 'Client can request all changed records that occurred since a '
+                                                 'specific date and time.',
+                                     epilog='For more information and additional help, please visit '
+                                            'https://github.com/LumaPictures/dbdump')
 
     # HTTP server
-    parser.add_argument('--listen-address', default='0.0.0.0', 
-                        help='HTTP server listen address')
-    parser.add_argument('--listen-port', type=int, default=8888, 
-                        help='HTTP server port')
-    parser.add_argument('--listen-username',
-                        help='HTTP basic auth username (required for all connecting clients)')
-    parser.add_argument('--listen-password',
-                        help='HTTP basic auth password (required for all connecting clients)')
-
+    server_group = parser.add_argument_group('Server', 'HTTP server that listens for clients.')
+    server_group.add_argument('-a', '--listen-address', metavar='IP', default=HTTP_DEFAULT_ADDRESS, 
+                              help='Listener interface address (default: %s)' % HTTP_DEFAULT_ADDRESS)
+    server_group.add_argument('-P', '--listen-port', metavar='PORT', type=int, default=HTTP_DEFAULT_PORT, 
+                              help='Listener port (default: %d)' % HTTP_DEFAULT_PORT)
+    server_group.add_argument('-u', '--listen-username', metavar='USERNAME',
+                              help='Username required for connecting HTTP clients')
+    server_group.add_argument('-p', '--listen-password', metavar='PASSWORD',
+                              help='Password required for connecting HTTP clients')
     # SSL mode
-    parser.add_argument('--listen-ssl', action='store_true',
-                        help='Enable SSL mode on HTTP listener (requires OpenSSL module)')
-    parser.add_argument('--ssl-private-key', default='ssl.key',
-                        help='OpenSSL private key file (*.key)')
-    parser.add_argument('--ssl-public-key', default='ssl.crt',
-                        help='OpenSSL public key file (*.crt)')
+    server_group.add_argument('-s', '--listen-ssl', action='store_true',
+                              help='Require SSL encryption')
+    server_group.add_argument('--ssl-private-key', metavar='FILE_PATH', default=HTTP_DEFAULT_SSL_PRIVATE_KEY,
+                              help='Private key file in OpenSSL format (default: %s)' % HTTP_DEFAULT_SSL_PRIVATE_KEY)
+    server_group.add_argument('--ssl-public-key', metavar='FILE_PATH', default=HTTP_DEFAULT_SSL_PUBLIC_KEY,
+                              help='Public key file in OpenSSL format (default: %s)' % HTTP_DEFAULT_SSL_PUBLIC_KEY)
 
     # Database client
-    parser.add_argument('--db-host', required=True, 
-                        help='Database server host')
-    parser.add_argument('--db-port', type=int, default=3306,
-                        help='Database server port')
-    parser.add_argument('--db-username', default='root',
-                        help='Database user')
-    parser.add_argument('--db-password', default='',
-                        help='Database password')
+    db_group = parser.add_argument_group('Database', 'MySQL database server where changes are being monitored. '
+                                                     'All qualified tables must have an auto-updating TIMESTAMP column.')
+    db_group.add_argument('-dh', '--db-host', metavar='HOST_OR_IP', required=True, 
+                          help='Database server host')
+    db_group.add_argument('--db-port', type=int, metavar='PORT', default=DB_DEFAULT_PORT,
+                          help='Database server port (default: %d)' % DB_DEFAULT_PORT)
+    db_group.add_argument('-du', '--db-username', metavar='USERNAME', required=True,
+                          help='Database username')
+    db_group.add_argument('-dp', '--db-password', metavar='PASSWORD', default=None,
+                          help='Database password')
 
     # Misc options
-    parser.add_argument('--debug', action='store_true',
-                        help='Enable debug mode')
-    parser.add_argument('--version', action='version',
-                        version='%%(prog)s (version %s)' % __version__,
-                        help='Display version and exit')
+    misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
+    misc_group.add_argument('-d', '--debug', action='store_true',
+                            help='Enable debug mode (shows more detailed logging and '
+                                 'auto-restarts web server when script files change)')
+    misc_group.add_argument('--version', action='version',
+                            version='%%(prog)s (version %s)' % __version__,
+                            help='Display version and exit')
 
     if argcomplete:
         argcomplete.autocomplete(parser)

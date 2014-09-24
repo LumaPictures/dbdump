@@ -1,0 +1,302 @@
+#!/usr/bin/env python
+import sys
+import json
+import csv
+import datetime
+import time
+import argparse
+try:
+    import argcomplete
+except ImportError:
+    argcomplete = None
+import httplib
+import urllib
+import logging
+try:
+    import cStringIO as StringIO
+except ImportError:
+    import StringIO
+import MySQLdb
+from dateutil import tz
+
+__version__ = '1.0.0'
+
+# Default args
+DBDUMP_DEFAULT_PORT = 8888
+DB_DEFAULT_PORT = 3306
+
+logger = logging.getLogger(__name__)
+quote = MySQLdb.escape_string
+arguments = {}
+
+
+def main():
+    debug = arguments['debug']
+
+    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
+                        format='[%(levelname)s] %(name)s: %(message)s')
+
+    logger.debug('Arguments: %s' % json.dumps(arguments))
+
+    dbdump_conn = get_dbdump_connection()
+    db_conn = get_db_connection()
+    try:
+        database = arguments['dbdump_database']
+        tables = get_tables_to_sync(dbdump_conn, database)
+
+        logger.debug('Supported tables: %s' % ', '.join(tables))
+        for table in tables:
+            sync_table(dbdump_conn, db_conn, database, table)
+
+    finally:
+        db_conn.close()
+        dbdump_conn.close()
+
+    return 0
+
+
+def unzip(d):
+    """
+    Returns (list_of_keys, list_of_values) in the same order they were in the dictionary.
+    Opposite of zip()
+    """
+    keys = []
+    values = []
+
+    for k, v in d.iteritems():
+        keys.append(k)
+        values.append(v)
+
+    return keys, values
+
+
+def sync_table(dbdump_conn, db_conn, database, table):
+    logger.info('Synchronizing table %s...' % table)
+
+    query = {}
+    ts_column = get_autoupdate_timestamp_columns(db_conn, database)[table]
+
+    # Get latest value
+    cursor = db_conn.cursor()
+    cursor.execute("select max(`%s`) from `%s`" % (quote(ts_column), quote(table)))
+    sync_meta = cursor.fetchone()
+    if sync_meta is not None:
+        last_sync_at = sync_meta[0]
+        if last_sync_at is not None:
+            query['since'] = last_sync_at \
+                .replace(tzinfo=get_db_timezone(db_conn)) \
+                .astimezone(tz.gettz('GMT')) \
+                .strftime('%Y-%m-%d %H:%M:%S')
+
+    primary_key = get_primary_key_columns(db_conn, database, table)
+    logger.info('Primary key: %s' % ', '.join(primary_key))
+
+    logger.info('Querying %s since %s' % (table, query.get('since')))
+    dbdump_conn.request('GET', '/%s/%s/?%s' % (database, table, urllib.urlencode(query.items())), 
+                        headers={'Accept': 'text/csv'})
+    resp = dbdump_conn.getresponse()
+    body = resp.read()
+
+    if not (199 < resp.status < 300):  # Error (non-2xx) response?
+        raise ValueError('Error %d fetching table rows: %s' % (resp.status, body))
+
+    if not resp.getheader('Content-Type') == 'text/csv':
+        raise ValueError('Error: Response not in CSV format')
+
+    string_reader = StringIO.StringIO(body)
+    csv_reader = csv.reader(string_reader, 
+                            delimiter=',', 
+                            quotechar='"', 
+                            doublequote=False,
+                            quoting=csv.QUOTE_ALL,
+                            escapechar="\\", 
+                            lineterminator='\n',
+                            strict=True)
+    try:
+        column_names = csv_reader.next()
+        for _row in csv_reader:
+
+            # Blank row?
+            if len(_row) == 0:
+                continue
+
+            row = dict(zip(column_names, _row))
+
+            # Determine if an local record exists
+            local_record = get_local_record(db_conn, table, row, primary_key)
+            if local_record is None:
+                # Insert
+                query = "insert into `%s` (`%s`) values (%s)" % (
+                    quote(table), 
+                    '`, `'.join([quote(k) for k in column_names]), 
+                    ", ".join([("'%s'" % quote(str(v)) if v is not None else 'null') 
+                               for v in _row]))
+            else:
+                # Update
+                query = "update `%s` set %s where %s" % (
+                    quote(table), 
+                    ', '.join(["`%s` = '%s'" % (quote(k), (quote(v) if v is not None else 'null')) 
+                               for k, v in row.items() 
+                               if k not in primary_key]), 
+                    ' and '.join(["`%s` = '%s'" % (quote(k), quote(str(row[k]))) 
+                                  for k in primary_key]))
+
+            logger.debug('Query: %s' % query)
+            cursor.execute(query)
+
+        db_conn.commit()
+
+        logger.info('Finished')
+    except StopIteration:
+        logger.info('No data')
+    finally:
+        string_reader.close()
+        del string_reader
+
+    # TODO: sync data
+
+def get_local_record(db_conn, table, row, primary_key):
+    where_stmt = ' and '.join(["`%s` = '%s'" % (quote(k), quote(str(row[k]))) for k in primary_key])
+
+    cursor = db_conn.cursor()
+    cursor.execute("select `%s` from `%s` where %s" % ('`, `'.join(row.keys()), quote(table), where_stmt))
+    result = cursor.fetchone()
+    if result is not None:
+        return zip(row.keys(), result)
+
+
+def get_primary_key_columns(conn, database, table):
+    cursor = conn.cursor()
+    cursor.execute("""
+        select
+            kcu.column_name
+        from information_schema.table_constraints tc
+        join information_schema.key_column_usage kcu on
+            kcu.constraint_schema = tc.constraint_schema and
+            kcu.constraint_name = tc.constraint_name and
+            kcu.table_schema = tc.table_schema and
+            kcu.table_name = tc.table_name
+        where
+            tc.constraint_type = 'PRIMARY KEY' and
+            tc.table_schema = %s and
+            tc.table_name = %s
+        order by
+            kcu.ordinal_position
+        """, (database, table))
+
+    return [row[0] for row in cursor.fetchall()]
+
+
+def get_autoupdate_timestamp_columns(conn, database):
+    """
+    Returns a dict of {table_name: timestamped_column_name} for only the
+    tables that have auto-updated timestamps.
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        select
+            table_name,
+            column_name
+        from information_schema.columns
+        where
+            table_schema = %s and
+            data_type = 'timestamp' and
+            extra = 'on update CURRENT_TIMESTAMP'
+        order by table_name
+        """, (database,))
+
+    # There shouldn't be any duplicate entries for tables in this list, since
+    # MySQL specifies that there can only be one auto-updated timestamp column.
+    return dict([(row[0], row[1]) for row in cursor.fetchall()])
+
+
+def get_tables_to_sync(conn, database):
+    conn.request('GET', '/%s/' % database, headers={'Accept': 'text/csv'})
+    resp = conn.getresponse()
+    body = resp.read()
+
+    if not (199 < resp.status < 300):  # Error (non-2xx) response?
+        raise ValueError('Error %d fetching tables: %s' % (resp.status, body))
+
+    if not resp.getheader('Content-Type') == 'text/csv':
+        raise ValueError('Error: Response not in CSV format')
+
+    return map(json.loads, body.splitlines()[1:])
+
+
+def get_dbdump_connection():
+    return httplib.HTTPConnection('%(dbdump_host)s:%(dbdump_port)d' % arguments)
+
+
+def get_system_timezone():
+    tz_name = time.strftime('%Z', time.gmtime())
+    return tz.gettz(tz_name)
+
+
+def get_db_timezone(conn):
+    cursor = conn.cursor()
+    cursor.execute("select @@session.time_zone")
+
+    row = cursor.fetchone()
+    if row is None or row[0] == 'SYSTEM':
+        return get_system_timezone()
+
+    return tz.gettz(row[0])
+
+
+def get_db_connection():
+    """
+    Gets a connection to the database server.
+    """
+    conn = MySQLdb.connect(host=arguments['db_host'], 
+                           port=arguments['db_port'],
+                           user=arguments['db_username'], 
+                           passwd=arguments['db_password'],
+                           db=arguments['db_database'])
+    conn.autocommit(False)
+    return conn
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(#prog='syncwebdb',
+                                     description='Pulls changes from a dbd_pusher server')
+
+    # Server options
+    server_group = parser.add_argument_group('Source dbd_server (that changes are read from)')
+    server_group.add_argument('-sh', '--host', metavar='HOST_OR_IP', required=True,
+                              help='dbdump web server')
+    server_group.add_argument('-sP', '--port', metavar='PORT', type=int, default=DBDUMP_DEFAULT_PORT, 
+                              help='dbdump web server port (default: %d)' % DBDUMP_DEFAULT_PORT)
+    server_group.add_argument('-su', '--username', metavar='USERNAME',
+                              help='dbdump username')
+    server_group.add_argument('-sp', '--password', metavar='PASSWORD',
+                              help='dbdump password')
+    server_group.add_argument('-sd', '--database', metavar='DATABASE', required=True,
+                              help='Source database name')
+
+    # Database client
+    db_group = parser.add_argument_group('Destination MySQL database server (that changes get written to)')
+    db_group.add_argument('-dh', '--db-host', metavar='HOST_OR_IP', required=True, 
+                          help='Database server host')
+    db_group.add_argument('-dP', '--db-port', metavar='PORT', type=int, default=DB_DEFAULT_PORT,
+                          help='Database server port (default: %d)' % DB_DEFAULT_PORT)
+    db_group.add_argument('-du', '--db-username', metavar='USERNAME', required=True,
+                          help='Database user')
+    db_group.add_argument('-dp', '--db-password', metavar='PASSWORD', default=None,
+                          help='Database password')
+    db_group.add_argument('-dd', '--db-database', metavar='DATABASE', required=True,
+                          help='Destination database name')
+
+    # Misc options
+    misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
+    misc_group.add_argument('-d', '--debug', action='store_true',
+                            help='Enable debug mode')
+    misc_group.add_argument('--version', action='version',
+                            version='%%(prog)s (version %s)' % __version__,
+                            help='Display version and exit')
+
+    if argcomplete:
+        argcomplete.autocomplete(parser)
+
+    arguments = vars(parser.parse_args())
+    sys.exit(main())
