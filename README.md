@@ -7,6 +7,8 @@ dbdump is a lightweight unidirectional MySQL data synchronization tool that cons
 
 The way it works is very simple: Any tables with an auto-updating TIMESTAMP column can be synchronized. Since making a change to a row with this type of column (almost) always ensures that the timestamp is updated when one or more columns changed, we can use it as sliding time window to determine how far behind the destination database tables are.
 
+No additional tables or configuration is required for tracking change history state.
+
 
 ## dbd_server - Starting the change monitoring web server
 
