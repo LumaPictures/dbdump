@@ -97,14 +97,17 @@ Use the `dbd_puller` command line tool:
 
     usage: dbd_puller [-h] -sh HOST_OR_IP [-sP PORT] [-su USERNAME] [-sp PASSWORD]
                       -sd DATABASE -dh HOST_OR_IP [-dP PORT] -du USERNAME
-                      [-dp PASSWORD] -dd DATABASE [-d] [--version]
+                      [-dp PASSWORD] -dd DATABASE [-t table1,tableN,...] [-d]
+                      [--version]
 
     Pulls changes from a dbd_pusher server
 
     optional arguments:
       -h, --help            show this help message and exit
 
-    Source dbd_server (that changes are read from):
+    Source:
+      Source dbd_server (that changes are read from)
+
       -sh HOST_OR_IP, --host HOST_OR_IP
                             dbdump web server
       -sP PORT, --port PORT
@@ -116,7 +119,9 @@ Use the `dbd_puller` command line tool:
       -sd DATABASE, --database DATABASE
                             Source database name
 
-    Destination MySQL database server (that changes get written to):
+    Destination:
+      Destination MySQL database server (that changes get written to)
+
       -dh HOST_OR_IP, --db-host HOST_OR_IP
                             Database server host
       -dP PORT, --db-port PORT
@@ -127,6 +132,13 @@ Use the `dbd_puller` command line tool:
                             Database password
       -dd DATABASE, --db-database DATABASE
                             Destination database name
+
+    Sync:
+      Synchronization options
+
+      -t table1,tableN,..., --tables table1,tableN,...
+                            Ordered list of tables to sync (default: all tables
+                            that dbd_server supports)
 
     Misc:
       Miscallaneous options

@@ -211,17 +211,23 @@ def get_autoupdate_timestamp_columns(conn, database):
 
 
 def get_tables_to_sync(conn, database):
-    conn.request('GET', '/%s/' % database, headers={'Accept': 'text/csv'})
-    resp = conn.getresponse()
-    body = resp.read()
+    tables = arguments['tables']
+    if tables:
+        # Specific list of tables
+        return tables.split(',')
+    else:
+        # Get all tables that dbd_server supports
+        conn.request('GET', '/%s/' % database, headers={'Accept': 'text/csv'})
+        resp = conn.getresponse()
+        body = resp.read()
 
-    if not (199 < resp.status < 300):  # Error (non-2xx) response?
-        raise ValueError('Error %d fetching tables: %s' % (resp.status, body))
+        if not (199 < resp.status < 300):  # Error (non-2xx) response?
+            raise ValueError('Error %d fetching tables: %s' % (resp.status, body))
 
-    if not resp.getheader('Content-Type') == 'text/csv':
-        raise ValueError('Error: Response not in CSV format')
+        if not resp.getheader('Content-Type') == 'text/csv':
+            raise ValueError('Error: Response not in CSV format')
 
-    return map(json.loads, body.splitlines()[1:])
+        return map(json.loads, body.splitlines()[1:])
 
 
 def get_dbdump_connection():
@@ -262,7 +268,7 @@ if __name__ == '__main__':
                                      description='Pulls changes from a dbd_pusher server')
 
     # Server options
-    server_group = parser.add_argument_group('Source dbd_server (that changes are read from)')
+    server_group = parser.add_argument_group('Source', 'Source dbd_server (that changes are read from)')
     server_group.add_argument('-sh', '--host', metavar='HOST_OR_IP', required=True,
                               help='dbdump web server')
     server_group.add_argument('-sP', '--port', metavar='PORT', type=int, default=DBDUMP_DEFAULT_PORT, 
@@ -275,7 +281,7 @@ if __name__ == '__main__':
                               help='Source database name')
 
     # Database client
-    db_group = parser.add_argument_group('Destination MySQL database server (that changes get written to)')
+    db_group = parser.add_argument_group('Destination', 'Destination MySQL database server (that changes get written to)')
     db_group.add_argument('-dh', '--db-host', metavar='HOST_OR_IP', required=True, 
                           help='Database server host')
     db_group.add_argument('-dP', '--db-port', metavar='PORT', type=int, default=DB_DEFAULT_PORT,
@@ -286,6 +292,11 @@ if __name__ == '__main__':
                           help='Database password')
     db_group.add_argument('-dd', '--db-database', metavar='DATABASE', required=True,
                           help='Destination database name')
+
+    # Sync options
+    sync_group = parser.add_argument_group('Sync', 'Synchronization options')
+    sync_group.add_argument('-t', '--tables', metavar='table1,tableN,...',
+                            help='Ordered list of tables to sync (default: all tables that dbd_server supports)')
 
     # Misc options
     misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
