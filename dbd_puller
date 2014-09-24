@@ -30,31 +30,6 @@ quote = MySQLdb.escape_string
 arguments = {}
 
 
-def main():
-    debug = arguments['debug']
-
-    logging.basicConfig(level=logging.DEBUG if debug else logging.INFO,
-                        format='[%(levelname)s] %(name)s: %(message)s')
-
-    logger.debug('Arguments: %s' % json.dumps(arguments))
-
-    dbdump_conn = get_dbdump_connection()
-    db_conn = get_db_connection()
-    try:
-        database = arguments['dbdump_database']
-        tables = get_tables_to_sync(dbdump_conn, database)
-
-        logger.debug('Supported tables: %s' % ', '.join(tables))
-        for table in tables:
-            sync_table(dbdump_conn, db_conn, database, table)
-
-    finally:
-        db_conn.close()
-        dbdump_conn.close()
-
-    return 0
-
-
 def unzip(d):
     """
     Returns (list_of_keys, list_of_values) in the same order they were in the dictionary.
@@ -74,7 +49,10 @@ def sync_table(dbdump_conn, db_conn, database, table):
     logger.info('Synchronizing table %s...' % table)
 
     query = {}
-    ts_column = get_autoupdate_timestamp_columns(db_conn, database)[table]
+    ts_column = get_autoupdate_timestamp_columns(db_conn, database).get(table)
+    if ts_column is None:
+        logger.error('Table "%s" does not exist in database' % table)
+        return
 
     # Get latest value
     cursor = db_conn.cursor()
@@ -231,7 +209,7 @@ def get_tables_to_sync(conn, database):
 
 
 def get_dbdump_connection():
-    return httplib.HTTPConnection('%(dbdump_host)s:%(dbdump_port)d' % arguments)
+    return httplib.HTTPConnection('%(host)s:%(port)d' % arguments)
 
 
 def get_system_timezone():
@@ -261,6 +239,42 @@ def get_db_connection():
                            db=arguments['db_database'])
     conn.autocommit(False)
     return conn
+
+
+def init_logger():
+    logging.basicConfig(level=logging.DEBUG if arguments['debug'] else logging.INFO,
+                    format='%(asctime)s | %(levelname)-5s | %(name)s: %(message)s')
+
+
+def main():
+    init_logger()
+    debug = arguments['debug']
+
+    #logger.debug('Arguments: %s' % json.dumps(arguments))
+
+    poll_interval = arguments['poll_interval']
+    while True:
+        dbdump_conn = get_dbdump_connection()
+        db_conn = get_db_connection()
+        try:
+            database = arguments['database']
+            tables = get_tables_to_sync(dbdump_conn, database)
+
+            logger.debug('Supported tables: %s' % ', '.join(tables))
+            for table in tables:
+                sync_table(dbdump_conn, db_conn, database, table)
+
+        finally:
+            db_conn.close()
+            dbdump_conn.close()
+
+        if poll_interval is None:
+            break
+
+        logger.debug('Polling again in %d seconds...' % poll_interval)
+        time.sleep(poll_interval)
+
+    return 0
 
 
 if __name__ == '__main__':
@@ -297,6 +311,8 @@ if __name__ == '__main__':
     sync_group = parser.add_argument_group('Sync', 'Synchronization options')
     sync_group.add_argument('-t', '--tables', metavar='table1,tableN,...',
                             help='Ordered list of tables to sync (default: all tables that dbd_server supports)')
+    sync_group.add_argument('--poll-interval', metavar='seconds', type=int, default=None,
+                            help='Polling interval between pull requests (if unspecified, polling will be disabled)')
 
     # Misc options
     misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
