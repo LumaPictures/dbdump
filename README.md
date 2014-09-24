@@ -8,53 +8,60 @@ Doesn't need to track any synchronization state, and assumes timestamps are reli
 
 Use the `dbd_server` command line tool:
 
-    usage: dbdump [-h] [-a IP] [-P PORT] [-u USERNAME] [-p PASSWORD] [-s]
-                  [--ssl-private-key FILE_PATH] [--ssl-public-key FILE_PATH] -dh
-                  HOST_OR_IP [--db-port PORT] -du USERNAME [-dp PASSWORD] [-d]
-                  [--version]
+    usage: dbd_puller [-h] -sh HOST_OR_IP [-sP PORT] [-su USERNAME] [-sp PASSWORD]
+                      -sd DATABASE -dh HOST_OR_IP [-dP PORT] -du USERNAME
+                      [-dp PASSWORD] -dd DATABASE [-t table1,tableN,...]
+                      [--poll-interval seconds] [-d] [--version]
 
-    Web server that sends changed database records to clients. Client can request
-    all changed records that occurred since a specific date and time.
+    Pulls changes from a dbd_pusher server
 
     optional arguments:
       -h, --help            show this help message and exit
 
-    Server:
-      HTTP server that listens for clients.
+    Source:
+      Source dbd_server (that changes are read from)
 
-      -a IP, --listen-address IP
-                            Listener interface address (default: 0.0.0.0)
-      -P PORT, --listen-port PORT
-                            Listener port (default: 8888)
-      -u USERNAME, --listen-username USERNAME
-                            Username required for connecting HTTP clients
-      -p PASSWORD, --listen-password PASSWORD
-                            Password required for connecting HTTP clients
-      -s, --listen-ssl      Require SSL encryption
-      --ssl-private-key FILE_PATH
-                            Private key file in OpenSSL format (default: ssl.key)
-      --ssl-public-key FILE_PATH
-                            Public key file in OpenSSL format (default: ssl.crt)
+      -sh HOST_OR_IP, --host HOST_OR_IP
+                            dbdump web server
+      -sP PORT, --port PORT
+                            dbdump web server port (default: 8888)
+      -su USERNAME, --username USERNAME
+                            dbdump username
+      -sp PASSWORD, --password PASSWORD
+                            dbdump password
+      -sd DATABASE, --database DATABASE
+                            Source database name
 
-    Database:
-      MySQL database server where changes are being monitored. All qualified
-      tables must have an auto-updating TIMESTAMP column.
+    Destination:
+      Destination MySQL database server (that changes get written to)
 
       -dh HOST_OR_IP, --db-host HOST_OR_IP
                             Database server host
-      --db-port PORT        Database server port (default: 3306)
+      -dP PORT, --db-port PORT
+                            Database server port (default: 3306)
       -du USERNAME, --db-username USERNAME
-                            Database username
+                            Database user
       -dp PASSWORD, --db-password PASSWORD
                             Database password
+      -dd DATABASE, --db-database DATABASE
+                            Destination database name
+
+    Sync:
+      Synchronization options
+
+      -t table1,tableN,..., --tables table1,tableN,...
+                            Ordered list of tables to sync (default: all tables
+                            that dbd_server supports)
+      --poll-interval seconds
+                            Polling interval between pull requests (if
+                            unspecified, polling will be disabled)
 
     Misc:
       Miscallaneous options
 
-      -d, --debug           Enable debug mode (shows more detailed logging and
-                            auto-restarts web server when script files change)
+      -d, --debug           Enable debug mode
       --version             Display version and exit
-
+  
 ### Examples of command line options
 
 Start the server on port 8888 and connect to database server host 'dbserver' as 'root' without a password:

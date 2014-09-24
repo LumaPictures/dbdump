@@ -163,6 +163,7 @@ def updated_rows(database, table):
             from `%(database)s`.`%(table)s`
             %(where_stmt)s
             order by `%(ts_column)s`
+            lock in share mode
             """ % dict(
                 projection='`, `'.join(map(quote, columns)), 
                 database=quote(database), 
