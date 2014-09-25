@@ -1,28 +1,31 @@
 #!/usr/bin/env python
-import sys
-import json
+import base64
 import csv
 import datetime
+import httplib
+import json
+import logging
+import sys
+try:
+    import cStringIO as StringIO
+except ImportError:
+    import StringIO
 import time
+import urllib
+
 import argparse
 try:
     import argcomplete
 except ImportError:
     argcomplete = None
-import httplib
-import urllib
-import logging
-try:
-    import cStringIO as StringIO
-except ImportError:
-    import StringIO
-import MySQLdb
 from dateutil import tz
+import MySQLdb
 
 __version__ = '1.0.0'
 
 # Default args
 DBDUMP_DEFAULT_PORT = 8888
+DBDUMP_DEFAULT_TIMEOUT = 3 * 60
 DB_DEFAULT_PORT = 3306
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,13 @@ def unzip(d):
         values.append(v)
 
     return keys, values
+
+
+def transform_column_data(column_data, quote_char="'"):
+    if column_data is None or column_data == '':
+        return 'null'
+    else:
+        return quote_char + quote(str(column_data)) + quote_char
 
 
 def sync_table(dbdump_conn, db_conn, database, table):
@@ -71,7 +81,7 @@ def sync_table(dbdump_conn, db_conn, database, table):
 
     logger.info('Querying %s since %s' % (table, query.get('since')))
     dbdump_conn.request('GET', '/%s/%s/?%s' % (database, table, urllib.urlencode(query.items())), 
-                        headers={'Accept': 'text/csv'})
+                        headers=build_headers())
     resp = dbdump_conn.getresponse()
     body = resp.read()
 
@@ -90,6 +100,10 @@ def sync_table(dbdump_conn, db_conn, database, table):
                             escapechar="\\", 
                             lineterminator='\n',
                             strict=True)
+
+    excluded_columns = get_excluded_columns().get(table) or set()
+    logger.debug('Excluded columns for %s: %s' % (table, ', '.join(excluded_columns)))
+
     try:
         column_names = csv_reader.next()
         for _row in csv_reader:
@@ -107,16 +121,16 @@ def sync_table(dbdump_conn, db_conn, database, table):
                 query = "insert into `%s` (`%s`) values (%s)" % (
                     quote(table), 
                     '`, `'.join([quote(k) for k in column_names]), 
-                    ", ".join([("'%s'" % quote(str(v)) if v is not None else 'null') 
+                    ", ".join([transform_column_data(v) 
                                for v in _row]))
             else:
                 # Update
                 query = "update `%s` set %s where %s" % (
                     quote(table), 
-                    ', '.join(["`%s` = '%s'" % (quote(k), (quote(v) if v is not None else 'null')) 
+                    ', '.join(["`%s` = %s" % (quote(k), transform_column_data(v)) 
                                for k, v in row.items() 
                                if k not in primary_key]), 
-                    ' and '.join(["`%s` = '%s'" % (quote(k), quote(str(row[k]))) 
+                    ' and '.join(["`%s` = %s" % (quote(k), transform_column_data(row[k])) 
                                   for k in primary_key]))
 
             logger.debug('Query: %s' % query)
@@ -132,6 +146,25 @@ def sync_table(dbdump_conn, db_conn, database, table):
         del string_reader
 
     # TODO: sync data
+
+
+def get_excluded_columns():
+    """
+    Returns column exclusions as { table: set(column_names) }
+    """
+    excluded_column_expr = arguments['exclude_columns']
+    if excluded_column_expr is None:
+        return {}
+
+    exclude_columns = {}
+    for table_column in excluded_column_expr.split(','):
+        table_name, column_name = table_column.split('.', 2)
+        if table_name not in exclude_columns:
+            exclude_columns[table_name] = set()
+        exclude_columns[table_name].add(column_name)
+
+    return exclude_columns
+
 
 def get_local_record(db_conn, table, row, primary_key):
     where_stmt = ' and '.join(["`%s` = '%s'" % (quote(k), quote(str(row[k]))) for k in primary_key])
@@ -188,6 +221,17 @@ def get_autoupdate_timestamp_columns(conn, database):
     return dict([(row[0], row[1]) for row in cursor.fetchall()])
 
 
+def build_headers():
+    headers = {'Accept': 'text/csv'}
+
+    if 'source_username' in arguments and 'source_password' in arguments:
+        # Authenticate request
+        headers['Authorization'] = 'Basic %s' % \
+            base64.b64encode('%(source_username)s:%(source_password)s' % arguments)
+
+    return headers
+
+
 def get_tables_to_sync(conn, database):
     tables = arguments['tables']
     if tables:
@@ -195,7 +239,7 @@ def get_tables_to_sync(conn, database):
         return tables.split(',')
     else:
         # Get all tables that dbd_server supports
-        conn.request('GET', '/%s/' % database, headers={'Accept': 'text/csv'})
+        conn.request('GET', '/%s/' % database, headers=build_headers())
         resp = conn.getresponse()
         body = resp.read()
 
@@ -209,7 +253,8 @@ def get_tables_to_sync(conn, database):
 
 
 def get_dbdump_connection():
-    return httplib.HTTPConnection('%(host)s:%(port)d' % arguments)
+    return httplib.HTTPConnection('%(source_host)s:%(source_port)d' % arguments, 
+                                  timeout=arguments['source_timeout'])
 
 
 def get_system_timezone():
@@ -232,11 +277,11 @@ def get_db_connection():
     """
     Gets a connection to the database server.
     """
-    conn = MySQLdb.connect(host=arguments['db_host'], 
-                           port=arguments['db_port'],
-                           user=arguments['db_username'], 
-                           passwd=arguments['db_password'],
-                           db=arguments['db_database'])
+    conn = MySQLdb.connect(host=arguments['dest_host'], 
+                           port=arguments['dest_port'],
+                           user=arguments['dest_username'], 
+                           passwd=arguments['dest_password'],
+                           db=arguments['dest_database'])
     conn.autocommit(False)
     return conn
 
@@ -257,7 +302,7 @@ def main():
         dbdump_conn = get_dbdump_connection()
         db_conn = get_db_connection()
         try:
-            database = arguments['database']
+            database = arguments['source_database']
             tables = get_tables_to_sync(dbdump_conn, database)
 
             logger.debug('Supported tables: %s' % ', '.join(tables))
@@ -283,44 +328,47 @@ if __name__ == '__main__':
 
     # Server options
     server_group = parser.add_argument_group('Source', 'Source dbd_server (that changes are read from)')
-    server_group.add_argument('-sh', '--host', metavar='HOST_OR_IP', required=True,
+    server_group.add_argument('--source-host', metavar='HOST_OR_IP', required=True,
                               help='dbdump web server')
-    server_group.add_argument('-sP', '--port', metavar='PORT', type=int, default=DBDUMP_DEFAULT_PORT, 
+    server_group.add_argument('--source-port', metavar='PORT', type=int, default=DBDUMP_DEFAULT_PORT, 
                               help='dbdump web server port (default: %d)' % DBDUMP_DEFAULT_PORT)
-    server_group.add_argument('-su', '--username', metavar='USERNAME',
+    server_group.add_argument('--source-username', metavar='USERNAME',
                               help='dbdump username')
-    server_group.add_argument('-sp', '--password', metavar='PASSWORD',
+    server_group.add_argument('--source-password', metavar='PASSWORD',
                               help='dbdump password')
-    server_group.add_argument('-sd', '--database', metavar='DATABASE', required=True,
+    server_group.add_argument('--source-database', metavar='DATABASE', required=True,
                               help='Source database name')
+    server_group.add_argument('--source-timeout', metavar='SECONDS', type=int, default=DBDUMP_DEFAULT_TIMEOUT,
+                              help='Seconds to wait before timing out connection attempt (default: %d)' % DBDUMP_DEFAULT_TIMEOUT)
 
     # Database client
     db_group = parser.add_argument_group('Destination', 'Destination MySQL database server (that changes get written to)')
-    db_group.add_argument('-dh', '--db-host', metavar='HOST_OR_IP', required=True, 
+    db_group.add_argument('--dest-host', metavar='HOST_OR_IP', required=True, 
                           help='Database server host')
-    db_group.add_argument('-dP', '--db-port', metavar='PORT', type=int, default=DB_DEFAULT_PORT,
+    db_group.add_argument('--dest-port', metavar='PORT', type=int, default=DB_DEFAULT_PORT,
                           help='Database server port (default: %d)' % DB_DEFAULT_PORT)
-    db_group.add_argument('-du', '--db-username', metavar='USERNAME', required=True,
+    db_group.add_argument('--dest-username', metavar='USERNAME', required=True,
                           help='Database user')
-    db_group.add_argument('-dp', '--db-password', metavar='PASSWORD', default=None,
+    db_group.add_argument('--dest-password', metavar='PASSWORD', default=None,
                           help='Database password')
-    db_group.add_argument('-dd', '--db-database', metavar='DATABASE', required=True,
+    db_group.add_argument('--dest-database', metavar='DATABASE', required=True,
                           help='Destination database name')
 
     # Sync options
     sync_group = parser.add_argument_group('Sync', 'Synchronization options')
     sync_group.add_argument('-t', '--tables', metavar='table1,tableN,...',
                             help='Ordered list of tables to sync (default: all tables that dbd_server supports)')
+    sync_group.add_argument('-x', '--exclude-columns', metavar='table1.column1,tableN.columnN,...',
+                            help='Columns to exclude from synchronization')
     sync_group.add_argument('--poll-interval', metavar='seconds', type=int, default=None,
                             help='Polling interval between pull requests (if unspecified, polling will be disabled)')
 
     # Misc options
-    misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
-    misc_group.add_argument('-d', '--debug', action='store_true',
-                            help='Enable debug mode')
-    misc_group.add_argument('--version', action='version',
-                            version='%%(prog)s (version %s)' % __version__,
-                            help='Display version and exit')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='Enable debug mode')
+    parser.add_argument('--version', action='version',
+                        version='%%(prog)s (version %s)' % __version__,
+                        help='Display version and exit')
 
     if argcomplete:
         argcomplete.autocomplete(parser)

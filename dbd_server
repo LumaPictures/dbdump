@@ -1,19 +1,19 @@
 #!/usr/bin/env python
+import datetime
+import functools
+import json
+import logging
+import socket
 import sys
-import argparse
 import time
+import traceback
+
+import argparse
 try:
     import argcomplete
 except ImportError:
     argcomplete = None
-import socket
-import logging
-import json
-import datetime
-import traceback
-import functools
 from dateutil import tz
-
 from flask import Flask, abort, render_template, request, Response
 import MySQLdb, _mysql_exceptions
 
@@ -108,14 +108,23 @@ def tables(database):
     """
     CSV list of all supported tables.
     """
+    if not is_supported_database(database):
+        return make_text_response('Database "%s" is unsupported or unavailable' % database, 404)
+
     conn = get_db_connection()
     try:
         supported_tables = dependency_sort_tables(conn, database, 
             get_autoupdate_timestamp_columns(conn, database).keys())
-        return make_csv_response(map(lambda r: (r,), supported_tables), ['table'])
+        return make_csv_response([(row,) for row in supported_tables], ['table'])
 
     finally:
         conn.close()
+
+
+@app.route('/')
+def databases():
+    supported_databases = get_supported_databases()
+    return make_csv_response([(row,) for row in supported_databases], ['database'])
 
 
 @app.route('/<string:database>/<string:table>/')
@@ -125,6 +134,9 @@ def updated_rows(database, table):
     """
     CSV list of all rows modified since :since: (in the query args) in the given table.
     """
+    if not is_supported_database(database):
+        return make_text_response('Database "%s" is unsupported or unavailable' % database, 404)
+
     conn = get_db_connection()
     try:
         timestamp_columns = get_autoupdate_timestamp_columns(conn, database)
@@ -172,6 +184,7 @@ def updated_rows(database, table):
                 ts_column=quote(ts_column))
 
         # Execute query
+        logger.info('Querying %s...' % table)
         logger.debug(query % tuple(where_args))
         cursor.execute(query, where_args)
         return make_csv_response(cursor.fetchall(), columns)
@@ -272,6 +285,33 @@ def get_projection(conn, database, table, include_columns=None, exclude_columns=
         return True
 
     return [r[0] for r in cursor.fetchall() if column_matches(r[0])]
+
+
+def is_supported_database(database_name):
+    return database_name in get_supported_databases()
+
+
+def get_supported_databases():
+    """
+    Returns a list of supported database names.
+    If the --db-databases argument was specified, then return the intersection.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            select schema_name
+            from information_schema.schemata
+            order by schema_name
+            """)
+        all_databases = set([row[0] for row in cursor.fetchall()])
+        if arguments['source_databases']:
+            database_names = set(arguments['source_databases'].split(','))
+            return database_names.intersection(all_databases)
+        else:
+            return all_databases
+    finally:
+        conn.close()
 
 
 def dependency_sort_tables(conn, database, table_names):
@@ -399,10 +439,10 @@ def get_db_connection():
     """
     Gets a connection to the database server.
     """
-    return MySQLdb.connect(host=arguments['db_host'], 
-                           port=arguments['db_port'],
-                           user=arguments['db_username'], 
-                           passwd=arguments['db_password'],
+    return MySQLdb.connect(host=arguments['source_host'], 
+                           port=arguments['source_port'],
+                           user=arguments['source_username'], 
+                           passwd=arguments['source_password'],
                            db='information_schema')
 
 
@@ -423,7 +463,7 @@ def main():
 
     # Test database connection
     try:
-        logger.debug('Test database connection at %(db_username)s@%(db_host)s:%(db_port)d...' % (arguments))
+        logger.debug('Test database connection at %(source_username)s@%(source_host)s:%(source_port)d...' % (arguments))
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('select 1')
@@ -467,7 +507,7 @@ def main():
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(prog='dbdump',
+    parser = argparse.ArgumentParser(#prog='dbdump',
                                      description='Web server that sends changed database records to clients. '
                                                  'Client can request all changed records that occurred since a '
                                                  'specific date and time.',
@@ -475,7 +515,7 @@ if __name__ == '__main__':
                                             'https://github.com/LumaPictures/dbdump')
 
     # HTTP server
-    server_group = parser.add_argument_group('Server', 'HTTP server that listens for clients.')
+    server_group = parser.add_argument_group('Web Server', 'HTTP server that listens for dbd_puller clients.')
     server_group.add_argument('-a', '--listen-address', metavar='IP', default=HTTP_DEFAULT_ADDRESS, 
                               help='Listener interface address (default: %s)' % HTTP_DEFAULT_ADDRESS)
     server_group.add_argument('-P', '--listen-port', metavar='PORT', type=int, default=HTTP_DEFAULT_PORT, 
@@ -493,25 +533,26 @@ if __name__ == '__main__':
                               help='Public key file in OpenSSL format (default: %s)' % HTTP_DEFAULT_SSL_PUBLIC_KEY)
 
     # Database client
-    db_group = parser.add_argument_group('Database', 'MySQL database server where changes are being monitored. '
-                                                     'All qualified tables must have an auto-updating TIMESTAMP column.')
-    db_group.add_argument('-dh', '--db-host', metavar='HOST_OR_IP', required=True, 
+    db_group = parser.add_argument_group('Source Database', 'MySQL database server where changes are being monitored. '
+                                                            'All qualified tables must have an auto-updating TIMESTAMP column.')
+    db_group.add_argument('--source-host', metavar='HOST_OR_IP', required=True, 
                           help='Database server host')
-    db_group.add_argument('--db-port', type=int, metavar='PORT', default=DB_DEFAULT_PORT,
+    db_group.add_argument('--source-port', type=int, metavar='PORT', default=DB_DEFAULT_PORT,
                           help='Database server port (default: %d)' % DB_DEFAULT_PORT)
-    db_group.add_argument('-du', '--db-username', metavar='USERNAME', required=True,
+    db_group.add_argument('--source-username', metavar='USERNAME', required=True,
                           help='Database username')
-    db_group.add_argument('-dp', '--db-password', metavar='PASSWORD', default=None,
+    db_group.add_argument('--source-password', metavar='PASSWORD', default=None,
                           help='Database password')
+    db_group.add_argument('--source-databases', metavar='database1,databaseN,...',
+                          help='Databases to expose (default: all databases)')
 
     # Misc options
-    misc_group = parser.add_argument_group('Misc', 'Miscallaneous options')
-    misc_group.add_argument('-d', '--debug', action='store_true',
-                            help='Enable debug mode (shows more detailed logging and '
-                                 'auto-restarts web server when script files change)')
-    misc_group.add_argument('--version', action='version',
-                            version='%%(prog)s (version %s)' % __version__,
-                            help='Display version and exit')
+    parser.add_argument('-d', '--debug', action='store_true',
+                        help='Enable debug mode (shows more detailed logging and '
+                             'auto-restarts web server when script files change)')
+    parser.add_argument('--version', action='version',
+                        version='%%(prog)s (version %s)' % __version__,
+                        help='Display version and exit')
 
     if argcomplete:
         argcomplete.autocomplete(parser)

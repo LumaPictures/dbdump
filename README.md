@@ -14,60 +14,53 @@ No additional tables or configuration is required for tracking change history st
 
 To run the web server on the source database, use the `dbd_server` command line tool:
 
-    usage: dbd_puller [-h] -sh HOST_OR_IP [-sP PORT] [-su USERNAME] [-sp PASSWORD]
-                      -sd DATABASE -dh HOST_OR_IP [-dP PORT] -du USERNAME
-                      [-dp PASSWORD] -dd DATABASE [-t table1,tableN,...]
-                      [--poll-interval seconds] [-d] [--version]
+    usage: dbd_server [-h] [-a IP] [-P PORT] [-u USERNAME] [-p PASSWORD] [-s]
+                      [--ssl-private-key FILE_PATH] [--ssl-public-key FILE_PATH]
+                      --source-host HOST_OR_IP [--source-port PORT]
+                      --source-username USERNAME [--source-password PASSWORD]
+                      [--source-databases database1,databaseN,...] [-d]
+                      [--version]
 
-    Pulls changes from a dbd_pusher server
+    Web server that sends changed database records to clients. Client can request
+    all changed records that occurred since a specific date and time.
 
     optional arguments:
       -h, --help            show this help message and exit
-
-    Source:
-      Source dbd_server (that changes are read from)
-
-      -sh HOST_OR_IP, --host HOST_OR_IP
-                            dbdump web server
-      -sP PORT, --port PORT
-                            dbdump web server port (default: 8888)
-      -su USERNAME, --username USERNAME
-                            dbdump username
-      -sp PASSWORD, --password PASSWORD
-                            dbdump password
-      -sd DATABASE, --database DATABASE
-                            Source database name
-
-    Destination:
-      Destination MySQL database server (that changes get written to)
-
-      -dh HOST_OR_IP, --db-host HOST_OR_IP
-                            Database server host
-      -dP PORT, --db-port PORT
-                            Database server port (default: 3306)
-      -du USERNAME, --db-username USERNAME
-                            Database user
-      -dp PASSWORD, --db-password PASSWORD
-                            Database password
-      -dd DATABASE, --db-database DATABASE
-                            Destination database name
-
-    Sync:
-      Synchronization options
-
-      -t table1,tableN,..., --tables table1,tableN,...
-                            Ordered list of tables to sync (default: all tables
-                            that dbd_server supports)
-      --poll-interval seconds
-                            Polling interval between pull requests (if
-                            unspecified, polling will be disabled)
-
-    Misc:
-      Miscallaneous options
-
-      -d, --debug           Enable debug mode
+      -d, --debug           Enable debug mode (shows more detailed logging and
+                            auto-restarts web server when script files change)
       --version             Display version and exit
-  
+
+    Web Server:
+      HTTP server that listens for dbd_puller clients.
+
+      -a IP, --listen-address IP
+                            Listener interface address (default: 0.0.0.0)
+      -P PORT, --listen-port PORT
+                            Listener port (default: 8888)
+      -u USERNAME, --listen-username USERNAME
+                            Username required for connecting HTTP clients
+      -p PASSWORD, --listen-password PASSWORD
+                            Password required for connecting HTTP clients
+      -s, --listen-ssl      Require SSL encryption
+      --ssl-private-key FILE_PATH
+                            Private key file in OpenSSL format (default: ssl.key)
+      --ssl-public-key FILE_PATH
+                            Public key file in OpenSSL format (default: ssl.crt)
+
+    Source Database:
+      MySQL database server where changes are being monitored. All qualified
+      tables must have an auto-updating TIMESTAMP column.
+
+      --source-host HOST_OR_IP
+                            Database server host
+      --source-port PORT    Database server port (default: 3306)
+      --source-username USERNAME
+                            Database username
+      --source-password PASSWORD
+                            Database password
+      --source-databases database1,databaseN,...
+                            Databases to expose (default: all databases)
+
 ### dbd_server examples
 
 Start the server on port 8888 and connect to database server host 'dbserver' as 'root' without a password:
@@ -112,42 +105,49 @@ To get changes from the `dbd_server` and sync them to a local database, run `dbd
 
 Use the `dbd_puller` command line tool:
 
-    usage: dbd_puller [-h] -sh HOST_OR_IP [-sP PORT] [-su USERNAME] [-sp PASSWORD]
-                      -sd DATABASE -dh HOST_OR_IP [-dP PORT] -du USERNAME
-                      [-dp PASSWORD] -dd DATABASE [-t table1,tableN,...] [-d]
-                      [--version]
+    usage: dbd_puller [-h] --source-host HOST_OR_IP [--source-port PORT]
+                      [--source-username USERNAME] [--source-password PASSWORD]
+                      --source-database DATABASE [--source-timeout SECONDS]
+                      --dest-host HOST_OR_IP [--dest-port PORT] --dest-username
+                      USERNAME [--dest-password PASSWORD] --dest-database DATABASE
+                      [-t table1,tableN,...]
+                      [-x table1.column1,tableN.columnN,...]
+                      [--poll-interval seconds] [-d] [--version]
 
     Pulls changes from a dbd_pusher server
 
     optional arguments:
       -h, --help            show this help message and exit
+      -d, --debug           Enable debug mode
+      --version             Display version and exit
 
     Source:
       Source dbd_server (that changes are read from)
 
-      -sh HOST_OR_IP, --host HOST_OR_IP
+      --source-host HOST_OR_IP
                             dbdump web server
-      -sP PORT, --port PORT
-                            dbdump web server port (default: 8888)
-      -su USERNAME, --username USERNAME
+      --source-port PORT    dbdump web server port (default: 8888)
+      --source-username USERNAME
                             dbdump username
-      -sp PASSWORD, --password PASSWORD
+      --source-password PASSWORD
                             dbdump password
-      -sd DATABASE, --database DATABASE
+      --source-database DATABASE
                             Source database name
+      --source-timeout SECONDS
+                            Seconds to wait before timing out connection attempt
+                            (default: 15)
 
     Destination:
       Destination MySQL database server (that changes get written to)
 
-      -dh HOST_OR_IP, --db-host HOST_OR_IP
+      --dest-host HOST_OR_IP
                             Database server host
-      -dP PORT, --db-port PORT
-                            Database server port (default: 3306)
-      -du USERNAME, --db-username USERNAME
+      --dest-port PORT      Database server port (default: 3306)
+      --dest-username USERNAME
                             Database user
-      -dp PASSWORD, --db-password PASSWORD
+      --dest-password PASSWORD
                             Database password
-      -dd DATABASE, --db-database DATABASE
+      --dest-database DATABASE
                             Destination database name
 
     Sync:
@@ -156,12 +156,11 @@ Use the `dbd_puller` command line tool:
       -t table1,tableN,..., --tables table1,tableN,...
                             Ordered list of tables to sync (default: all tables
                             that dbd_server supports)
-
-    Misc:
-      Miscallaneous options
-
-      -d, --debug           Enable debug mode
-      --version             Display version and exit
+      -x table1.column1,tableN.columnN,..., --exclude-columns table1.column1,tableN.columnN,...
+                            Columns to exclude from synchronization
+      --poll-interval seconds
+                            Polling interval between pull requests (if
+                            unspecified, polling will be disabled)
 
 ### dbd_puller examples
 
