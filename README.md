@@ -2,10 +2,10 @@
 
 dbdump is a lightweight unidirectional MySQL data synchronization tool that consists of two parts:
 
-1. `dbd_server` - a web server that monitors changes in a source database
-2. `dbd_puller` - a command-line tool to pull the changes reported by `dbd_server`, updating a target database
+1. `dbd_server` - RESTful web API that sends recent db changes to `dbd_puller`.
+2. `dbd_puller` - Periodically pulls changes from `dbd_server` and saves them to a database.
 
-The way it works is very simple: Any tables with an auto-updating TIMESTAMP column can be synchronized. Since making a change to a row with this type of column (almost) always ensures that the timestamp is updated when one or more columns changed, we can use it as sliding time window to determine how far behind the destination database tables are.
+The way it works is very simple: Any tables with an auto-updating `TIMESTAMP` column can be synchronized. Since making a change to a row with this type of column (almost) always ensures that the timestamp is updated when one or more columns changed, we can use it as sliding time window to determine how far behind the destination database tables are.
 
 No additional tables or configuration is required for tracking change history state.
 
@@ -65,7 +65,7 @@ To run the web server on the source database, use the `dbd_server` command line 
 
 Start the server on port 8888 and connect to database server host 'dbserver' as 'root' without a password:
 
-    ./dbd_server --db-host dbserver
+    ./dbd_server --source-host dbserver --source-username root
 
 
 Start the server on port 8000, use SSL, and require HTTP authentication (as: foo/bar) for clients:
@@ -74,10 +74,10 @@ Start the server on port 8000, use SSL, and require HTTP authentication (as: foo
                  --listen-ssl \
                  --listen-username foo \
                  --listen-password bar \
-                 --db-host dbserver \
-                 --db-username root \
-                 --db-password secret \
-                 --db-database SOURCE
+                 --source-host dbserver \
+                 --source-username root \
+                 --source-password secret \
+                 --source-database SOURCE
 
 
 ### Manually querying the web server
@@ -166,10 +166,23 @@ Use the `dbd_puller` command line tool:
 
 Connect to the `dbd_server` at my-server.com:8888 and sync changes to a local MySQL server on port 3306:
 
-    ./dbd_puller --host my-server.com \
-                 --port 8888 \
-                 --db-host localhost \
-                 --db-port 3306 \
-                 --db-username root \
-                 --db-password secret \
-                 --db-database TARGET
+    ./dbd_puller --source-host my-server.com \
+                 --source-port 8888 \
+                 --dest-host localhost \
+                 --dest-port 3306 \
+                 --dest-username root \
+                 --dest-password secret \
+                 --dest-database TARGET
+
+## Caveats
+
+This synchronization process is simple, and not perfect. It should suit our needs, but it’s still a work in progress. Here’s some caveats to be aware of:
+
+* Doesn’t synchronize DELETEs. Just works for INSERT and UPDATE.
+* The dbd_puller and dbd_server processes may die (from connection timeouts or other unexpected exceptions), and should be monitored with something like supervisor.
+* There’s an option to encrypt traffic by enabling SSL on the web server, but it’s untested.
+
+## Future Plans
+
+* Synchronize DELETEs (periodically) by testing set difference of primary keys.
+* Allow the dbd_server to be mounted as a WSGI endpoint. This requires creating environment variable equivalents to the command line arguments, since arguments can’t be passed to a WSGI script.
