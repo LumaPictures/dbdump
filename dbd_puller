@@ -27,6 +27,7 @@ __version__ = '1.0.0'
 DBDUMP_DEFAULT_PORT = 8888
 DBDUMP_DEFAULT_TIMEOUT = 3 * 60
 DB_DEFAULT_PORT = 3306
+NULL_MAGIC_STRING = '$$NULL$$'
 
 logger = logging.getLogger(__name__)
 quote = MySQLdb.escape_string
@@ -49,7 +50,7 @@ def unzip(d):
 
 
 def transform_column_data(column_data, quote_char="'"):
-    if column_data is None or column_data == '':
+    if column_data is None or column_data == NULL_MAGIC_STRING:
         return 'null'
     else:
         return quote_char + quote(str(column_data)) + quote_char
