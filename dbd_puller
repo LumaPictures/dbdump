@@ -78,7 +78,7 @@ def sync_table(dbdump_conn, db_conn, database, table):
                 .strftime('%Y-%m-%d %H:%M:%S')
 
     primary_key = get_primary_key_columns(db_conn, database, table)
-    logger.info('Primary key: %s' % ', '.join(primary_key))
+    #logger.info('Primary key: %s' % ', '.join(primary_key))
 
     logger.info('Querying %s since %s' % (table, query.get('since')))
     dbdump_conn.request('GET', '/%s/%s/?%s' % (database, table, urllib.urlencode(query.items())), 
@@ -107,6 +107,8 @@ def sync_table(dbdump_conn, db_conn, database, table):
 
     try:
         column_names = csv_reader.next()
+        inserts = 0
+        updates = 0
         for _row in csv_reader:
 
             # Blank row?
@@ -114,18 +116,22 @@ def sync_table(dbdump_conn, db_conn, database, table):
                 continue
 
             row = dict(zip(column_names, _row))
+            key_string = ','.join([row[k] for k in primary_key])
 
             # Determine if an local record exists
             local_record = get_local_record(db_conn, table, row, primary_key)
             if local_record is None:
                 # Insert
+                logger.info('Adding %s %s (updated %s)' % (table, key_string, row[ts_column]))
                 query = "insert into `%s` (`%s`) values (%s)" % (
                     quote(table), 
                     '`, `'.join([quote(k) for k in column_names]), 
                     ", ".join([transform_column_data(v) 
                                for v in _row]))
+                inserts += 1
             else:
                 # Update
+                logger.info('Updating %s %s (updated %s)' % (table, key_string, row[ts_column]))
                 query = "update `%s` set %s where %s" % (
                     quote(table), 
                     ', '.join(["`%s` = %s" % (quote(k), transform_column_data(v)) 
@@ -133,15 +139,18 @@ def sync_table(dbdump_conn, db_conn, database, table):
                                if k not in primary_key]), 
                     ' and '.join(["`%s` = %s" % (quote(k), transform_column_data(row[k])) 
                                   for k in primary_key]))
+                updates += 1
 
             logger.debug('Query: %s' % query)
             cursor.execute(query)
 
         db_conn.commit()
 
-        logger.info('Finished')
+        logger.info('Finished synchronization (%d inserts, %d updates)' % (inserts, updates))
+
     except StopIteration:
-        logger.info('No data')
+        logger.info('Already up-to-date')
+
     finally:
         string_reader.close()
         del string_reader
@@ -317,7 +326,7 @@ def main():
         if poll_interval is None:
             break
 
-        logger.debug('Polling again in %d seconds...' % poll_interval)
+        logger.info('Polling again in %d seconds...' % poll_interval)
         time.sleep(poll_interval)
 
     return 0

@@ -258,6 +258,7 @@ class CSVGenerator(object):
             return NULL_MAGIC_STRING
         else:
             escaped = str(data) \
+                .replace('\0', '') \
                 .replace(self.escape_char, self.escape_char * 2) \
                 .replace(self.quote_char, self.escape_char + self.quote_char)
             return self.quote_char + escaped + self.quote_char
