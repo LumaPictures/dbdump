@@ -1,5 +1,5 @@
 flask
 argparse
-MySQLdb
+mysqldb
 pyopenssl
 python-dateutil

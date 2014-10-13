@@ -56,14 +56,15 @@ def transform_column_data(column_data, quote_char="'"):
         return quote_char + quote(str(column_data)) + quote_char
 
 
-def sync_table(dbdump_conn, db_conn, database, table):
+def sync_table(dbdump_conn, db_conn, database, table, ts_column=None):
     logger.info('Synchronizing table %s...' % table)
 
     query = {}
-    ts_column = get_autoupdate_timestamp_columns(db_conn, database).get(table)
     if ts_column is None:
-        logger.error('Table "%s" does not exist in database' % table)
-        return
+        ts_column = get_autoupdate_timestamp_columns(db_conn, database).get(table)
+        if ts_column is None:
+            logger.error('Table "%s" does not exist in database' % table)
+            return
 
     # Get latest value
     cursor = db_conn.cursor()
@@ -316,8 +317,13 @@ def main():
             tables = get_tables_to_sync(dbdump_conn, database)
 
             logger.debug('Supported tables: %s' % ', '.join(tables))
-            for table in tables:
-                sync_table(dbdump_conn, db_conn, database, table)
+            for table_spec in tables:
+                if '.' in table_spec:
+                    table_name, ts_column = table_spec.split('.', 2)
+                else:
+                    table_name = table
+                    ts_column = None
+                sync_table(dbdump_conn, db_conn, database, table_name, ts_column)
 
         finally:
             db_conn.close()
