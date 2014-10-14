@@ -51,13 +51,19 @@ def unzip(d):
 
 
 def transform_column_data(column_data, quote_char="'"):
+    #logger.debug(type(column_data))
     if column_data is None or column_data == NULL_MAGIC_STRING:
         return 'null'
-    else:
-        return quote_char + quote(str(column_data)) + quote_char
 
+    value = column_data
+    if not isinstance(value, basestring):
+        value = unicode(value)
+    elif isinstance(value, str):
+        value = value.decode('utf-8', 'replace').encode('utf-8', 'replace')
 
-def sync_table(dbdump_conn, db_conn, database, table, ts_column=None):
+    return quote_char + quote(value) + quote_char
+
+def sync_table(dbdump_conn, db_conn, database, table, ts_column=None, force_resync=False):
     logger.info('Synchronizing table %s...' % table)
 
     query = {}
@@ -69,20 +75,23 @@ def sync_table(dbdump_conn, db_conn, database, table, ts_column=None):
 
     # Get latest value
     cursor = db_conn.cursor()
-    cursor.execute("select max(`%s`) from `%s`" % (quote(ts_column), quote(table)))
-    sync_meta = cursor.fetchone()
-    if sync_meta is not None:
-        last_sync_at = sync_meta[0]
-        if last_sync_at is not None:
-            query['since'] = last_sync_at \
-                .replace(tzinfo=get_db_timezone(db_conn)) \
-                .astimezone(tz.gettz('GMT')) \
-                .strftime('%Y-%m-%d %H:%M:%S')
+    if not force_resync:
+        cursor.execute("select max(`%s`) from `%s`" % (quote(ts_column), quote(table)))
+        sync_meta = cursor.fetchone()
+        if sync_meta is not None:
+            last_sync_at = sync_meta[0]
+            if last_sync_at is not None:
+                query['since'] = last_sync_at \
+                    .replace(tzinfo=get_db_timezone(db_conn)) \
+                    .astimezone(tz.gettz('GMT')) \
+                    .strftime('%Y-%m-%d %H:%M:%S')
+        logger.info('Querying %s since %s' % (table, query.get('since')))
+    else:
+        logger.info('Querying all %s' % table)
 
     primary_key = get_primary_key_columns(db_conn, database, table)
     #logger.info('Primary key: %s' % ', '.join(primary_key))
 
-    logger.info('Querying %s since %s' % (table, query.get('since')))
     dbdump_conn.request('GET', '/%s/%s/?%s' % (database, table, urllib.urlencode(query.items())), 
                         headers=build_headers())
     resp = dbdump_conn.getresponse()
@@ -144,14 +153,9 @@ def sync_table(dbdump_conn, db_conn, database, table, ts_column=None):
                 updates += 1
 
             logger.debug('Query: %s' % query)
-            try:
-                cursor.execute(query)
-            except _mysql_exceptions.MySQLError, ex:
-                logger.error('Error updating database: %s' % ex)
-                if not arguments['ignore_database_errors']:
-                    raise ex
+            cursor.execute(query)
 
-        db_conn.commit()
+        #db_conn.commit()
 
         logger.info('Finished synchronization (%d inserts, %d updates)' % (inserts, updates))
 
@@ -298,8 +302,10 @@ def get_db_connection():
                            port=arguments['dest_port'],
                            user=arguments['dest_username'], 
                            passwd=arguments['dest_password'],
-                           db=arguments['dest_database'])
-    #conn.autocommit(False)
+                           db=arguments['dest_database'],
+                           charset='utf8',
+                           use_unicode=True)
+    conn.autocommit(True)
     return conn
 
 
@@ -311,11 +317,15 @@ def init_logger():
 def main():
     init_logger()
     debug = arguments['debug']
+    force_resync = arguments['force_resync']
 
     #logger.debug('Arguments: %s' % json.dumps(arguments))
 
     poll_interval = arguments['poll_interval']
     while True:
+        if force_resync:
+            logger.warn('Forcing a full resync...')
+
         dbdump_conn = get_dbdump_connection()
         db_conn = get_db_connection()
         try:
@@ -329,7 +339,21 @@ def main():
                 else:
                     table_name = table
                     ts_column = None
-                sync_table(dbdump_conn, db_conn, database, table_name, ts_column)
+                sync_table(dbdump_conn, db_conn, database, table_name, ts_column, force_resync)
+
+        except _mysql_exceptions.IntegrityError, ex:
+            logger.error('Foreign key constraint integrity error: %s' % ex)
+            force_resync = True
+            continue
+
+        except _mysql_exceptions.MySQLError, ex:
+            logger.error('Error updating database: %s' % ex)
+            if not arguments['ignore_database_errors']:
+                return 1
+
+        except KeyboardInterrupt, ex:
+            logger.warn('^C pressed. Terminating!')
+            break
 
         finally:
             db_conn.close()
@@ -338,6 +362,7 @@ def main():
         if poll_interval is None:
             break
 
+        force_resync = False
         logger.info('Polling again in %d seconds...' % poll_interval)
         time.sleep(poll_interval)
 
@@ -375,8 +400,6 @@ if __name__ == '__main__':
                           help='Database password')
     db_group.add_argument('--dest-database', metavar='DATABASE', required=True,
                           help='Destination database name')
-    db_group.add_argument('--ignore-database-errors', action='store_true',
-                          help='Log and ignore MySQL database errors that occur when manipulating data')
 
     # Sync options
     sync_group = parser.add_argument_group('Sync', 'Synchronization options')
@@ -386,6 +409,10 @@ if __name__ == '__main__':
                             help='Columns to exclude from synchronization')
     sync_group.add_argument('--poll-interval', metavar='seconds', type=int, default=None,
                             help='Polling interval between pull requests (if unspecified, polling will be disabled)')
+    sync_group.add_argument('--ignore-database-errors', action='store_true',
+                          help='Log and ignore MySQL database errors that occur when manipulating data')
+    sync_group.add_argument('-f', '--force-resync', action='store_true',
+                            help='Force resynchronization of all data')
 
     # Misc options
     parser.add_argument('-d', '--debug', action='store_true',
