@@ -20,6 +20,7 @@ except ImportError:
     argcomplete = None
 from dateutil import tz
 import MySQLdb
+import _mysql_exceptions
 
 __version__ = '1.0.0'
 
@@ -143,7 +144,12 @@ def sync_table(dbdump_conn, db_conn, database, table, ts_column=None):
                 updates += 1
 
             logger.debug('Query: %s' % query)
-            cursor.execute(query)
+            try:
+                cursor.execute(query)
+            except _mysql_exceptions.MySQLError, ex:
+                logger.error('Error updating database: %s' % ex)
+                if not arguments['ignore_database_errors']:
+                    raise ex
 
         db_conn.commit()
 
@@ -369,6 +375,8 @@ if __name__ == '__main__':
                           help='Database password')
     db_group.add_argument('--dest-database', metavar='DATABASE', required=True,
                           help='Destination database name')
+    db_group.add_argument('--ignore-database-errors', action='store_true',
+                          help='Log and ignore MySQL database errors that occur when manipulating data')
 
     # Sync options
     sync_group = parser.add_argument_group('Sync', 'Synchronization options')
