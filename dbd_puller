@@ -299,7 +299,7 @@ def get_db_connection():
                            user=arguments['dest_username'], 
                            passwd=arguments['dest_password'],
                            db=arguments['dest_database'])
-    conn.autocommit(False)
+    #conn.autocommit(False)
     return conn
 
 
