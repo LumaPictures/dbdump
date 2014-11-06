@@ -1,5 +1,6 @@
-flask
 argparse
-mysqldb
+flask
+MySQL-python
+Paste
 pyopenssl
 python-dateutil

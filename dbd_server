@@ -16,8 +16,9 @@ except ImportError:
 from dateutil import tz
 from flask import Flask, abort, render_template, request, Response
 import MySQLdb, _mysql_exceptions
+import paste.httpserver
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 # Default args
 HTTP_DEFAULT_ADDRESS = '0.0.0.0'
@@ -498,9 +499,12 @@ def main():
         logger.info('Starting server on %s://%s:%d' % (
                     ('https' if use_ssl else 'http'), arguments['listen_address'], arguments['listen_port']))
 
-        app.run(host=arguments['listen_address'], 
-                port=arguments['listen_port'],
-                ssl_context=ssl_context)
+        paste.httpserver.serve(app, 
+                host=arguments['listen_address'], 
+                port=arguments['listen_port'], 
+                ssl_context=ssl_context,
+                use_threadpool=True)
+
         return 0
 
     except socket.error, ex:

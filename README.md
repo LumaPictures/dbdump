@@ -10,6 +10,18 @@ The way it works is very simple: Any tables with an auto-updating `TIMESTAMP` co
 No additional tables or configuration is required for tracking change history state.
 
 
+## Installation
+
+1. Ensure Python 2.7 and pip are installed
+2. If you're on OSX, you may want to install the 'cryptography' module via macports:
+
+    sudo port install py27-cryptography
+
+3. Install remaining dependencies:
+
+    sudo pip install -r requirements.txt
+
+
 ## dbd_server - Starting the change monitoring web server
 
 To run the web server on the source database, use the `dbd_server` command line tool:

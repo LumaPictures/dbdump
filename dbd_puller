@@ -22,7 +22,7 @@ from dateutil import tz
 import MySQLdb
 import _mysql_exceptions
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 # Default args
 DBDUMP_DEFAULT_PORT = 8888
@@ -117,7 +117,7 @@ def sync_table(dbdump_conn, db_conn, database, table, ts_column=None, force_resy
     logger.debug('Excluded columns for %s: %s' % (table, ', '.join(excluded_columns)))
 
     try:
-        column_names = csv_reader.next()
+        _column_names = csv_reader.next()
         inserts = 0
         updates = 0
         for _row in csv_reader:
@@ -126,7 +126,17 @@ def sync_table(dbdump_conn, db_conn, database, table, ts_column=None, force_resy
             if len(_row) == 0:
                 continue
 
+            column_names = list(_column_names)
             row = dict(zip(column_names, _row))
+
+            # Strip excluded columns
+            if len(excluded_columns):
+                for k in excluded_columns:
+                    col_idx = column_names.index(k)
+                    del column_names[col_idx]
+                    del _row[col_idx]
+                    del row[k]
+
             key_string = ','.join([row[k] for k in primary_key])
 
             # Determine if an local record exists
@@ -322,6 +332,8 @@ def main():
     #logger.debug('Arguments: %s' % json.dumps(arguments))
 
     poll_interval = arguments['poll_interval']
+    resync_interval = arguments['resync_interval']
+    poll_count = 0
     while True:
         if force_resync:
             logger.warn('Forcing a full resync...')
@@ -362,7 +374,14 @@ def main():
         if poll_interval is None:
             break
 
-        force_resync = False
+        poll_count += 1
+
+        if resync_interval is not None and poll_count % resync_interval == 0:
+            logger.info('Forcing a resync next poll...')
+            force_resync = True
+        else:
+            force_resync = False
+
         logger.info('Polling again in %d seconds...' % poll_interval)
         time.sleep(poll_interval)
 
@@ -411,6 +430,8 @@ if __name__ == '__main__':
                             help='Polling interval between pull requests (if unspecified, polling will be disabled)')
     sync_group.add_argument('--ignore-database-errors', action='store_true',
                           help='Log and ignore MySQL database errors that occur when manipulating data')
+    sync_group.add_argument('--resync-interval', metavar='poll_count', type=int, default=None,
+                            help='Force resync after this many polls')
     sync_group.add_argument('-f', '--force-resync', action='store_true',
                             help='Force resynchronization of all data')
 
